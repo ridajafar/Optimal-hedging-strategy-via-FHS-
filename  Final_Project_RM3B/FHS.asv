@@ -1,0 +1,89 @@
+function [Simulated_shock]=FHS(ZC,N,h)
+% Filtred Historical Simulation
+%
+% INPUTS:
+% 
+% ZC:                      Zero coupon interest rates for each day from
+%                          historical data
+% N:                       Number of simulation
+% h:                       time horizon (1,2,..,10 days) (in our case h=10)
+
+%
+% OUTPUTS:
+%
+% Simulated_shoks:          Matrix of shocks of the new simulated ZC curves
+%                           of size 10 row (maturities for each swap) and N
+%                           columns number of simulation
+ 
+
+%log returns
+log_returns= log(ZC(2:end,:)./ZC(1:end-1,:));
+
+ % Model ARMA-GARCH(1,1)
+ model=arima('ARLags',1,'MALags',0,'Variance',garch(1,1));
+ garchmodel=arrayfun(@(x) estimate(model, log_returns(:,x)),1:size(log_returns,2));
+
+ [res,volatility, ~]=arrayfun(@(x) infer(garchmodel(x), log_returns(:,x)),1:size(log_returns,2),'UniformOutput',false);
+ [~,~,V]= arrayfun(@(x) forecast(garchmodel(x),h,log_returns(:,x)),1:size(log_returns,2),'UniformOutput',false);
+ 
+ % parameters matirx of size 10x2 where every row contains the parameter mu
+ % of AR AND theta of MA 
+ parameters=[arrayfun(@(x)  garchmodel(x).AR{1},1:size(log_returns,2))',arrayfun(@(x)  garchmodel(x).MA{1},1:size(log_returns,2))'];
+  
+ volatility=cat(2, volatility{:});
+ res=cat(2, res{:});
+ 
+ % historical_std_Res matrix of standarised residual 
+ historical_std_Res=res./sqrt(volatility);
+ ht=volatility(end,:);
+ Vol_forecast=cat(2, V{:});
+
+
+% Matrix of 3 dimensions Simulated_shock it contains N matrices
+% of size (h+1)xmaturities (11x10)
+%where every first row of the N matrices contains the last row of ZC of our
+%data
+Simulated_shock = zeros(h+1, size(ZC,2), N);
+Simulated_shock(1,:,:)=repmat(ZC(length(ZC),:), [1, 1, N]);
+
+
+% Matrix of 3 dimensions matrix3D_res of residuals it contains N matrices
+% of size (h+1)xmaturities (11x10)
+%where every first row of the N matrices contains a random row of residuals
+matrix3D_res = zeros(h+1,size(ZC,2), N);
+rand_index= randi([1,size(historical_std_Res,1)],[N, 1]);
+matrix=historical_std_Res(rand_index,:).*sqrt(ht);
+
+matrixA_reshaped = reshape(matrix', [1,size(ZC,2), N]);
+matrix3D_res(1,:,:) = matrixA_reshaped;
+
+
+% Matrix of 3 dimensions matrix3D_log_returns_forecast of forecasted log
+% returns it contains N matrices of size (h+1)xmaturities (11x10)
+%where every first row of the N matrices contains the last row of the
+%matrix log_returns
+matrix3D_log_returns_forecast= zeros(h+1,size(ZC,2), N);
+matrix3D_log_returns_forecast(1,:,:)=repmat(log_returns(end,:), [1, 1, N]);
+
+
+
+%reshape of parameters to extract every column into a 3D matrix form
+parameter_1 = repmat(reshape(parameters(:,1)', [1, size(ZC,2), 1]), [1, 1, N]);
+parameter_2 = repmat(reshape(parameters(:,2)', [1, size(ZC,2), 1]), [1, 1, N]);
+
+for i=1:h
+  rand_index= randi([1,size(historical_std_Res,1)],[N, 1]);
+  matrix=historical_std_Res(rand_index,:).*sqrt(Vol_forecast(i,:));
+  matrixA_reshaped = reshape(matrix', [1, size(ZC,2), N]);
+  matrix3D_res(i+1,:,:) = matrixA_reshaped;
+
+  Simulated_shock(i+1,:,:)= Simulated_shock(i,:,:)+Simulated_shock(i,:,:).*(parameter_1(:,:,i).*matrix3D_log_returns_forecast(i,:,:)+parameter_2(:,:,i).* matrix3D_res(i,:,:)+ matrix3D_res(i+1,:,:));
+  matrix3D_log_returns_forecast(i+1,:,:)= log(Simulated_shock(i+1,:,:)./Simulated_shock(i,:,:));
+
+
+end
+
+Simulated_shock = reshape(Simulated_shock(h+1, :, :),size(ZC,2), N);
+
+
+end
